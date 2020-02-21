@@ -1,5 +1,6 @@
 from datetime import datetime
 import logging
+import re
 
 from octomachinery.app.server.runner import run as run_app
 from octomachinery.routing import process_event_actions
@@ -143,8 +144,62 @@ async def on_pr_check_wip(*, pull_request, repository, **_kw):
                     'https://farm3.staticflickr.com'
                     '/2150/2101058680_64fa63971e.jpg)',
             },
+            'actions': [
+                {
+                    'label': 'WIP it!',
+                    'description': 'Mark the PR as WIP',
+                    'identifier': 'wip',
+                } if not is_wip_pr else {
+                    'label': 'UnWIP it!',
+                    'description': 'Remove WIP mark from the PR',
+                    'identifier': 'unwip',
+                },
+            ],
         },
     )
+
+
+@process_event_actions('check_run', {'requested_action'})
+@process_webhook_payload
+async def on_pr_action_button_click(*, check_run, requested_action, **_kw):
+    """Flip the WIP switch when user hits a button."""
+    requested_action_id = requested_action['identifier']
+    if requested_action_id not in {'wip', 'unwip'}:
+        return
+
+    github_api = RUNTIME_CONTEXT.app_installation_client
+
+    wip_it = requested_action_id == 'wip'
+
+    pull_request = check_run['pull_requests'][0]
+    pr_api_uri = pull_request['url']
+
+    pr_details = await github_api.getitem(pr_api_uri)
+
+    pr_title = pr_details['title']
+
+    if wip_it:
+        new_title = f'WIP: {pr_title}'
+    else:
+        wip_markers = (
+            'wip', '🚧', 'dnm',
+            'work in progress', 'work-in-progress',
+            'do not merge', 'do-not-merge',
+            'draft',
+        )
+
+        wip_regex = fr'(\s*({"|".join(wip_markers)}):?\s+)'
+        new_title = re.sub(
+            wip_regex, '', pr_title, flags=re.I,
+        ).replace('🚧', '')
+
+    await github_api.patch(
+        pr_api_uri,
+        data={
+            'title': new_title,
+        },
+    )
+
 
 if __name__ == '__main__':
     run_app(
